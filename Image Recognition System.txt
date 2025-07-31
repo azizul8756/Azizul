@@ -1,0 +1,318 @@
+# ==============================================================================
+# File: requirements.txt
+# This file lists the Python packages required for the project.
+# To install them, run `pip install -r requirements.txt` in your terminal.
+# ==============================================================================
+Flask
+tensorflow
+Pillow
+numpy
+opencv-python
+```python
+# ==============================================================================
+# File: app.py
+# This is the main Flask application file. It handles web requests and
+# integrates the image recognition model.
+# ==============================================================================
+import os
+import io
+import numpy as np
+from PIL import Image
+from flask import Flask, render_template, request, jsonify
+from werkzeug.utils import secure_filename
+from model import predict_image
+
+# Initialize the Flask app
+app = Flask(__name__)
+
+# Configure the upload folder and allowed file extensions
+UPLOAD_FOLDER = 'static/uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# Create the upload folder if it doesn't exist
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# Helper function to check if the file extension is allowed
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route('/')
+def index():
+    """
+    Serves the main HTML page for the web app.
+    """
+    return render_template('index.html')
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    """
+    API endpoint to handle image uploads and return prediction results.
+    """
+    # Check if a file was uploaded in the request
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+
+    file = request.files['file']
+
+    # If the user does not select a file, the browser submits an empty part
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    # Process the file if it's valid
+    if file and allowed_file(file.filename):
+        # Save the uploaded image securely
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        try:
+            # Use the model to predict the content of the image
+            prediction, score, image_url = predict_image(filepath)
+
+            # Return the prediction and image URL
+            return jsonify({
+                'success': True,
+                'prediction': prediction,
+                'score': score,
+                'image_url': f'/{image_url}'
+            })
+        except Exception as e:
+            # In case of an error during prediction
+            print(f"Prediction error: {e}")
+            return jsonify({'error': 'Prediction failed'}), 500
+
+    return jsonify({'error': 'Invalid file type'}), 400
+
+# This block allows the script to be run directly
+if __name__ == '__main__':
+    # Running in debug mode for development.
+    app.run(debug=True)
+```python
+# ==============================================================================
+# File: model.py
+# This file contains the core machine learning logic for image classification.
+# ==============================================================================
+import numpy as np
+from PIL import Image
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input, decode_predictions
+from tensorflow.keras.preprocessing import image
+
+# Load the pre-trained MobileNetV2 model
+print("Loading MobileNetV2 model...")
+model = MobileNetV2(weights='imagenet')
+
+def preprocess_image(img_path):
+    """
+    Preprocesses a single image for the MobileNetV2 model.
+    """
+    # Load the image and resize to the target size expected by the model
+    img = image.load_img(img_path, target_size=(224, 224))
+    # Convert the image to a numpy array
+    img_array = image.img_to_array(img)
+    # Expand dimensions to create a batch of size 1
+    img_array = np.expand_dims(img_array, axis=0)
+    # Preprocess the image for MobileNetV2
+    img_array = preprocess_input(img_array)
+    return img_array
+
+def predict_image(img_path):
+    """
+    Makes a prediction on an image using the loaded model.
+    """
+    # Preprocess the image
+    processed_image = preprocess_image(img_path)
+
+    # Make the prediction
+    predictions = model.predict(processed_image)
+
+    # Decode the predictions into a human-readable format
+    decoded_predictions = decode_predictions(predictions, top=1)[0]
+    
+    # Get the top prediction
+    top_prediction = decoded_predictions[0]
+    
+    # Extract the prediction details
+    label = top_prediction[1]
+    score = float(f"{top_prediction[2]:.2f}") # Format the score to 2 decimal places
+
+    # Return the label, score, and image URL
+    return label, score, img_path
+```html
+<!-- ============================================================================== -->
+<!-- File: templates/index.html                                                     -->
+<!-- This is the front-end HTML for the image recognition web app.                  -->
+<!-- It uses Tailwind CSS for styling and JavaScript for interaction.             -->
+<!-- ============================================================================== -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Recognition</title>
+    <!-- Use Tailwind CSS from a CDN -->
+    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+    <style>
+        @import url('[https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap](https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap)');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .prediction-result {
+            display: none;
+        }
+        .prediction-result.visible {
+            display: block;
+        }
+        .loading-spinner {
+            border-top-color: #3b82f6;
+            -webkit-animation: spinner 1.5s linear infinite;
+            animation: spinner 1.5s linear infinite;
+            display: none;
+        }
+        .loading-spinner.visible {
+            display: inline-block;
+        }
+        @-webkit-keyframes spinner {
+            0% { -webkit-transform: rotate(0deg); }
+            100% { -webkit-transform: rotate(360deg); }
+        }
+        @keyframes spinner {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-2xl bg-white rounded-2xl shadow-xl p-8 space-y-8">
+        <!-- Header -->
+        <header class="text-center">
+            <h1 class="text-4xl font-bold text-gray-800">Image Recognition System</h1>
+            <p class="text-lg text-gray-500 mt-2">Upload an image and see what the AI thinks it is.</p>
+        </header>
+
+        <!-- Main Content -->
+        <main class="space-y-6">
+            <!-- Image Upload Form -->
+            <form id="upload-form" class="flex flex-col items-center p-6 border-2 border-dashed border-gray-300 rounded-xl hover:bg-gray-50 transition-colors duration-300">
+                <div class="w-full flex flex-col items-center justify-center space-y-4">
+                    <svg xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)" class="h-16 w-16 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-4-4v-1a4 4 0 014-4h2a4 4 0 014-4h2a4 4 0 014 4v1a4 4 0 01-4 4M4 16l3-3m0 0l3 3m-3-3v8" />
+                    </svg>
+                    <label for="image-upload" class="cursor-pointer text-blue-600 font-semibold text-lg">
+                        Click here to upload an image
+                    </label>
+                    <input type="file" id="image-upload" name="file" accept="image/*" class="hidden">
+                    <p id="file-name" class="text-sm text-gray-500"></p>
+                </div>
+            </form>
+            
+            <!-- Prediction button -->
+            <div class="text-center">
+                <button type="button" id="predict-button" class="px-6 py-3 bg-blue-600 text-white font-semibold text-lg rounded-full shadow-lg hover:bg-blue-700 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-blue-300" disabled>
+                    Predict Image
+                </button>
+            </div>
+
+            <!-- Result Display -->
+            <div id="result-container" class="prediction-result p-6 bg-gray-50 rounded-xl space-y-4">
+                <div class="flex items-center justify-center">
+                    <div class="loading-spinner h-8 w-8 rounded-full border-4 border-gray-200"></div>
+                </div>
+                <div id="prediction-content" class="space-y-4">
+                    <h3 class="text-2xl font-bold text-gray-800 text-center">Prediction:</h3>
+                    <img id="uploaded-image" src="" alt="Uploaded Image" class="rounded-lg shadow-md max-h-96 mx-auto">
+                    <div class="bg-white p-4 rounded-lg border border-gray-200 text-center">
+                        <p class="text-xl text-gray-700"><span class="font-semibold" id="prediction-label"></span></p>
+                        <p class="text-sm text-gray-500 mt-1">Confidence Score: <span id="prediction-score"></span></p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const uploadForm = document.getElementById('upload-form');
+        const fileInput = document.getElementById('image-upload');
+        const predictButton = document.getElementById('predict-button');
+        const resultContainer = document.getElementById('result-container');
+        const loadingSpinner = document.querySelector('.loading-spinner');
+        const predictionContent = document.getElementById('prediction-content');
+        const uploadedImage = document.getElementById('uploaded-image');
+        const fileNameElement = document.getElementById('file-name');
+        const predictionLabel = document.getElementById('prediction-label');
+        const predictionScore = document.getElementById('prediction-score');
+
+        let uploadedFile = null;
+
+        fileInput.addEventListener('change', (event) => {
+            uploadedFile = event.target.files[0];
+            if (uploadedFile) {
+                fileNameElement.textContent = uploadedFile.name;
+                predictButton.disabled = false;
+
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    uploadedImage.src = e.target.result;
+                    uploadedImage.classList.remove('hidden');
+                };
+                reader.readAsDataURL(uploadedFile);
+            } else {
+                fileNameElement.textContent = '';
+                predictButton.disabled = true;
+                uploadedImage.src = '';
+            }
+            // Hide previous results
+            resultContainer.classList.remove('visible');
+            predictionContent.classList.add('hidden');
+        });
+
+        predictButton.addEventListener('click', async () => {
+            if (!uploadedFile) {
+                return;
+            }
+
+            // Show loading spinner and hide prediction content
+            resultContainer.classList.add('visible');
+            loadingSpinner.classList.add('visible');
+            predictionContent.classList.add('hidden');
+            predictButton.disabled = true;
+
+            const formData = new FormData();
+            formData.append('file', uploadedFile);
+
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    predictionLabel.textContent = data.prediction.replace(/_/g, ' '); // Replace underscores for readability
+                    predictionScore.textContent = data.score;
+                    
+                    // Show prediction content and hide spinner
+                    predictionContent.classList.remove('hidden');
+                    loadingSpinner.classList.remove('visible');
+                } else {
+                    alert(`Error: ${data.error}`);
+                    // Hide spinner in case of error
+                    loadingSpinner.classList.remove('visible');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred during prediction. Please try again.');
+                loadingSpinner.classList.remove('visible');
+            } finally {
+                predictButton.disabled = false;
+            }
+        });
+
+    </script>
+</body>
+</html>
