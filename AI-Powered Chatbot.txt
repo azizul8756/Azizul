@@ -1,0 +1,289 @@
+# ==============================================================================
+# File: requirements.txt
+# This file lists the Python packages required for the project.
+# To install them, run `pip install -r requirements.txt` in your terminal.
+# ==============================================================================
+Flask
+transformers
+torch
+nltk
+SQLAlchemy
+sentence-transformers
+```
+
+```python
+# ==============================================================================
+# File: model.py
+# This file contains the core chatbot logic, database models, and interaction functions.
+# ==============================================================================
+import os
+import datetime
+import nltk
+from nltk.corpus import stopwords
+import torch
+from transformers import AutoModel, AutoTokenizer
+from sentence_transformers import SentenceTransformer
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+# Download NLTK data if not already present
+try:
+    nltk.data.find('corpora/stopwords')
+except nltk.downloader.DownloadError:
+    print("Downloading NLTK stopwords...")
+    nltk.download('stopwords')
+
+# ==============================================================================
+# Database Configuration
+# ==============================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'chatbot_logs.db')
+engine = create_engine(f'sqlite:///{DB_PATH}')
+Base = declarative_base()
+
+# Define the database model for conversation logs
+class ConversationLog(Base):
+    __tablename__ = 'conversation_logs'
+    id = Column(Integer, primary_key=True)
+    user_message = Column(String)
+    bot_response = Column(String)
+    timestamp = Column(DateTime, default=datetime.datetime.now)
+
+    def __repr__(self):
+        return f"<ConversationLog(user_message='{self.user_message}', bot_response='{self.bot_response}')>"
+
+# Create the database and table if they don't exist
+def create_db():
+    print("Creating database tables...")
+    Base.metadata.create_all(engine)
+
+# ==============================================================================
+# Chatbot Model
+# ==============================================================================
+# Load a pre-trained Sentence Transformer model for semantic search
+print("Loading Sentence Transformer model...")
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Define a simple FAQ dataset
+faq_dataset = {
+    "What is your refund policy?": "Our refund policy allows for full refunds within 30 days of purchase. Please visit our website for more details.",
+    "How can I contact customer support?": "You can contact our customer support team by emailing support@example.com or calling us at 1-800-123-4567.",
+    "What are your business hours?": "We are open Monday through Friday, from 9 AM to 5 PM local time.",
+    "Do you offer international shipping?": "Yes, we do. We offer international shipping to over 100 countries. Shipping costs and times vary by location.",
+    "How do I reset my password?": "You can reset your password by clicking on the 'Forgot Password' link on the login page and following the instructions.",
+    "Where can I find the user manual?": "The user manual can be found on our 'Downloads' page, accessible from the main navigation menu.",
+}
+
+# Pre-compute embeddings for the FAQ questions
+faq_questions = list(faq_dataset.keys())
+faq_embeddings = model.encode(faq_questions)
+
+# Create a session to interact with the database
+Session = sessionmaker(bind=engine)
+
+def get_response(user_input):
+    """
+    Finds the best response to a user's question by finding the most similar
+    FAQ question in the dataset using semantic search.
+    """
+    # Create a new session for this operation
+    session = Session()
+
+    try:
+        # Generate embedding for the user's input
+        user_input_embedding = model.encode([user_input])
+
+        # Calculate cosine similarity between user input and all FAQ questions
+        similarities = torch.cosine_similarity(torch.tensor(user_input_embedding), torch.tensor(faq_embeddings))
+
+        # Find the index of the most similar question
+        best_match_index = torch.argmax(similarities).item()
+        best_match_score = similarities[best_match_index].item()
+
+        # Set a threshold for relevance
+        if best_match_score > 0.6:  # A score above 0.6 is considered a good match
+            response = faq_dataset[faq_questions[best_match_index]]
+        else:
+            response = "I'm sorry, I don't have an answer for that. Please try rephrasing your question or contact our support team."
+
+        # Log the conversation
+        log = ConversationLog(user_message=user_input, bot_response=response)
+        session.add(log)
+        session.commit()
+
+        return response
+
+    except Exception as e:
+        session.rollback()
+        print(f"An error occurred: {e}")
+        return "An internal error occurred. Please try again later."
+    finally:
+        session.close()
+
+# Initialize the database when the module is imported
+create_db()
+```
+
+```python
+# ==============================================================================
+# File: app.py
+# This is the main Flask application file. It handles web requests and
+# integrates the chatbot model.
+# ==============================================================================
+from flask import Flask, render_template, request, jsonify
+from model import get_response
+
+# Initialize the Flask app
+app = Flask(__name__, template_folder='templates')
+
+@app.route('/')
+def index():
+    """
+    Serves the main HTML page for the chatbot UI.
+    """
+    return render_template('index.html')
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    """
+    API endpoint to receive user messages and return bot responses.
+    """
+    data = request.get_json()
+    user_message = data.get('message')
+
+    if not user_message:
+        return jsonify({'error': 'No message provided'}), 400
+
+    bot_response = get_response(user_message)
+    return jsonify({'response': bot_response})
+
+# This block allows the script to be run directly
+if __name__ == '__main__':
+    # Running in debug mode for development
+    # In a production environment, use a production WSGI server like Gunicorn
+    app.run(debug=True)
+```
+
+```html
+<!-- ============================================================================== -->
+<!-- File: templates/index.html                                                     -->
+<!-- This is the front-end HTML for the chatbot user interface.                     -->
+<!-- It uses Tailwind CSS for styling and JavaScript for interaction.             -->
+<!-- ============================================================================== -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Chatbot</title>
+    <!-- Use Tailwind CSS from a CDN for simple styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .chat-message.user {
+            justify-content: flex-end;
+        }
+        .chat-message.bot {
+            justify-content: flex-start;
+        }
+        .chat-message .message-bubble {
+            max-width: 75%;
+            padding: 10px 15px;
+            border-radius: 1.5rem;
+            word-wrap: break-word;
+        }
+        .chat-message.user .message-bubble {
+            background-color: #3b82f6; /* Tailwind's blue-500 */
+            color: white;
+            border-bottom-right-radius: 0;
+        }
+        .chat-message.bot .message-bubble {
+            background-color: #e5e7eb; /* Tailwind's gray-200 */
+            color: #1f2937; /* Tailwind's gray-800 */
+            border-bottom-left-radius: 0;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div class="w-full max-w-2xl bg-white rounded-2xl shadow-lg flex flex-col h-[80vh] overflow-hidden">
+        <!-- Header -->
+        <div class="bg-blue-600 text-white p-4 flex items-center rounded-t-2xl">
+            <div class="h-10 w-10 bg-white rounded-full flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+            </div>
+            <div class="ml-4">
+                <h1 class="text-xl font-semibold">Support Bot</h1>
+                <p class="text-sm font-light">Online</p>
+            </div>
+        </div>
+
+        <!-- Chat Container -->
+        <div id="chat-container" class="flex-1 p-6 overflow-y-auto space-y-4">
+            <!-- Initial bot message -->
+            <div class="chat-message bot flex">
+                <div class="message-bubble">Hello! I'm here to help. How can I assist you today?</div>
+            </div>
+        </div>
+
+        <!-- Input Form -->
+        <form id="chat-form" class="p-4 border-t border-gray-200 flex space-x-2">
+            <input type="text" id="user-input" class="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Type your message...">
+            <button type="submit" class="bg-blue-600 text-white p-2 rounded-full shadow-md hover:bg-blue-700 transition duration-300 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                </svg>
+            </button>
+        </form>
+    </div>
+
+    <script>
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const chatContainer = document.getElementById('chat-container');
+
+        // Function to add a new message to the chat container
+        function addMessage(sender, message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message flex ${sender === 'user' ? 'user' : 'bot'}`;
+            messageDiv.innerHTML = `<div class="message-bubble">${message}</div>`;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight; // Auto-scroll to the bottom
+        }
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const message = userInput.value.trim();
+            if (message === '') return;
+
+            addMessage('user', message);
+            userInput.value = '';
+
+            try {
+                // Send the user's message to the Flask API
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: message }),
+                });
+
+                const data = await response.json();
+                if (data.response) {
+                    addMessage('bot', data.response);
+                } else {
+                    addMessage('bot', 'Sorry, something went wrong.');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('bot', 'Network error. Please check your connection and try again.');
+            }
+        });
+    </script>
+</body>
+</html>
